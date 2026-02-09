@@ -11,19 +11,27 @@ import numpy as np
 from pydantic import BaseModel, RootModel
 
 
-# Gemini
 from google import genai
+import random
+
+KEYS = [
+    os.getenv("GEMINI_API_KEY_1"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3"),
+    os.getenv("GEMINI_API_KEY_4"),
+    os.getenv("GEMINI_API_KEY_5"),
+]
+
+# remove empty ones
+KEYS = [k for k in KEYS if k]
+
+if not KEYS:
+    raise RuntimeError("No Gemini API keys found in environment")
 
 
-# ================================
-# CONFIG
-# ================================
+def get_client():
+    return genai.Client(api_key=random.choice(KEYS))
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-if not API_KEY:
-    raise RuntimeError("Set GEMINI_API_KEY in .env")
-
-client = genai.Client(api_key=API_KEY)
 
 # Stable + fast model
 MODEL_NAME = "models/gemini-2.5-flash"
@@ -146,56 +154,66 @@ def extract_text(image_path: str) -> str:
 # GEMINI SAFE CALL
 # ================================
 def call_gemini(prompt: str):
-    try:
-        response = client.models.generate_content(
-            model=MODEL_NAME,
-            contents=prompt,
-            timeout=20
-        )   
 
+    last_error = None
 
-        raw = ""
+    for key in KEYS:
 
-        # SAFER EXTRACTION
-        if hasattr(response, "text") and response.text:
-            raw = response.text
-        elif response.candidates:
-            raw = response.candidates[0].content.parts[0].text
-        else:
+        try:
+            client = genai.Client(api_key=key)
+
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt
+            )
+
+            # ---------- SAFE TEXT EXTRACTION ----------
             raw = ""
 
-        raw = raw.strip()
+            if hasattr(response, "text") and response.text:
+                raw = response.text
+            elif response.candidates:
+                raw = response.candidates[0].content.parts[0].text
+            else:
+                raw = ""
 
-        # Remove markdown fences
-        raw = re.sub(r"```json", "", raw)
-        raw = re.sub(r"```", "", raw)
+            raw = raw.strip()
 
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if not match:
-            return {
-                "form_type": "Unknown",
-                "summary": raw[:300],
-                "fields": []
-            }
+            raw = re.sub(r"```json", "", raw)
+            raw = re.sub(r"```", "", raw)
 
-        data = json.loads(match.group(0))
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
 
-        if not isinstance(data, dict):
-            data = {}
+            if not match:
+                return {
+                    "form_type": "Unknown",
+                    "summary": raw[:300],
+                    "fields": []
+                }
 
-        data.setdefault("form_type", "Unknown Form")
-        data.setdefault("summary", "")
-        data.setdefault("fields", [])
+            data = json.loads(match.group(0))
 
-        return data
+            if not isinstance(data, dict):
+                data = {}
 
-    except Exception as e:
-        return {
-            "form_type": "Unknown",
-            "summary": "Gemini parsing failed",
-            "fields": [],
-            "error": str(e)
-        }
+            data.setdefault("form_type", "Unknown Form")
+            data.setdefault("summary", "")
+            data.setdefault("fields", [])
+
+            return data
+
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    # ---------- ALL KEYS FAILED ----------
+    return {
+        "form_type": "Unknown",
+        "summary": "AI temporarily busy — please retry",
+        "fields": [],
+        "error": last_error
+    }
+
 
 # ================================
 # MAIN ENDPOINT
@@ -334,15 +352,28 @@ ANSWERS:
 {answers}
 """
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        timeout=20
-    )
+    response = None
 
-    return {"sample": response.text or "AI could not generate sample"}
+    for key in KEYS:
+        try:
+            client = genai.Client(api_key=key)
+
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+            )
+            break
+
+        except:
+            continue
+
+    if not response:
+        return {"sample": "AI busy — try again"}
+
+    return {"sample": response.text or ""}
 
 
+# -------- LETTER GENERATOR --------
 # -------- LETTER GENERATOR --------
 class LetterRequest(RootModel):
     root: dict
@@ -362,13 +393,26 @@ DETAILS:
 {answers}
 """
 
-    response = client.models.generate_content(
-        model=MODEL_NAME,
-        contents=prompt,
-        timeout=20
-    )
+    response = None
 
-    return {"letter": response.text or "AI could not generate letter"}
+    for key in KEYS:
+        try:
+            client = genai.Client(api_key=key)
+
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt,
+            )
+            break
+
+        except:
+            continue
+
+    if not response:
+        return {"letter": "AI busy — try again"}
+
+    return {"letter": response.text or ""}
+
 @app.get("/")
 def health():
     return {"status":"running"}
